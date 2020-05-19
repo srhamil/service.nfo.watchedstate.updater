@@ -18,6 +18,8 @@ import socket
 import json
 import xml.etree.ElementTree as ET
 from os import path
+from os import stat as osstat
+
 
 
 addon = xbmcaddon.Addon('service.nfo.watchedstate.updater')
@@ -40,10 +42,10 @@ class NFOWatchedstateUpdater():
         xbmc.sleep(int(delay))
         try:
             self.s.connect((self.XBMCIP, self.XBMCPORT))
-        except Exception, e:
+        except Exception as e:
             xbmc.executebuiltin('Notification(%s, Error: %s, %s, %s)' %(addon_name, str(e), delay, logo) )
             xbmc.sleep(int(delay))
-            xbmc.executebuiltin('Notification(%s, Please check remote control settings, %s, %s)' %(addon_name, delay, logo) )
+            xbmc.executebuiltin('Notification(%s, Please check JSONRPC settings, %s, %s)' %(addon_name, delay, logo) )
             xbmc.sleep(int(delay))
             #xbmc.executebuiltin('ActivateWindow(10018)')
             exit(0)
@@ -76,19 +78,21 @@ class NFOWatchedstateUpdater():
 
 
     def VideoLibraryOnUpdate(self, jsonmsg):        
-        #xbmc.log(str(jsonmsg["params"]["data"]["item"]["id"]))
-        #xbmc.log(str(jsonmsg["params"]["data"]["item"]["type"]))
-        #xbmc.log(str(jsonmsg["params"]["data"]["playcount"]))
-            
-        if (jsonmsg["params"]["data"]["item"].has_key("id")) and (jsonmsg["params"]["data"]["item"].has_key("type")) and (jsonmsg["params"]["data"].has_key("playcount")):
+        xbmc.log("{0} message: {1}".format(addon_name,str(jsonmsg)),xbmc.LOGDEBUG)
+        itemid = None
+        itemtype = None
+        itemplaycount = None
+        try:
             itemid = jsonmsg["params"]["data"]["item"]["id"]
             itemtype = jsonmsg["params"]["data"]["item"]["type"]
             itemplaycount = jsonmsg["params"]["data"]["playcount"]
+        except Exception :
+            xbmc.log("{0} ignoring, not a playcount update".format(addon_name),xbmc.LOGINFO)
+            return
 
-            #xbmc.log(str(type(itemid)))
-            #xbmc.log(str(type(itemtype)))
-            #xbmc.log(str(type(itemplaycount)))
-
+        if ( itemid and itemtype and itemplaycount is not None ): 
+            xbmc.log("{0} itemplaycount update message  itemid {1}  itemtype {2}  itemplaycount {3}".format(addon_name,str(itemid),str(itemtype),str(itemplaycount)),xbmc.LOGDEBUG)
+     
             if itemtype == u'movie':
                 msg = xbmc.executeJSONRPC('{"jsonrpc":"2.0","method":"VideoLibrary.GetMovieDetails","params":{"movieid":%d,"properties":["file"]},"id":1}' %(itemid) )
                 jsonmsg = json.loads(msg)
@@ -108,60 +112,130 @@ class NFOWatchedstateUpdater():
                 self.updateNFO(filepath, itemplaycount)
 
 
-            #if itemtype == u'tvshow':
-                
-        
-    def updateNFO(self, filepath, playcount):
+            if itemtype == u'tvshow':
+                msg = xbmc.executeJSONRPC('{"jsonrpc":"2.0","method":"VideoLibrary.GetTVShowDetails","params":{"tvshowid":%s,"properties":["file"]},"id":1}' %(str(itemid)) )
+                jsonmsg = json.loads(msg)
+
+                filepath = path.join(jsonmsg["result"]["tvshowdetails"]["file"], "tvshow.nfo")
+
+                self.updateNFO(filepath, itemplaycount)
+
+               
+
+    def locateNfoFile(self, filepath):            
+        # handle the alternate location of movie.nfo which Kodi supports but does not recommend using
         filepath = filepath.replace(path.splitext(filepath)[1], '.nfo')
+        filepath2 = filepath.replace(path.split(filepath)[1], 'movie.nfo')
+        if xbmcvfs.exists(filepath) == False and xbmcvfs.exists(filepath2):
+            filepath = filepath2
+        xbmc.log("{0} updating {1}".format(addon_name,filepath), xbmc.LOGINFO)
+        return filepath
+
+    def readFile(self,filepath):
+        sFile = xbmcvfs.File(filepath)
+        currentBuffer = []
+        msg = ''
+        while True:
+            buf = sFile.read(1024)
+            currentBuffer.append(buf)
+            if not buf:
+                msg = ''.join(currentBuffer)                    
+                break
+
+        sFile.close()
+        return msg
+
+    def parseXml(self,xml):
+            try:
+                tree = ET.ElementTree(ET.fromstring(xml))
+                return tree
+            except Exception as err:
+                xbmc.log("{0} bad xml: {1}".format(addon_name,str(err)), xbmc.LOGDEBUG)
+            return None
+      
+ 
+
+    def setElementText(self, element, value):
+        xbmc.log("{0} setElementText  {1}, {2}, ".format(addon_name,str(element),str(value)), xbmc.LOGDEBUG)
+        currentValue = element.text
+        if ( str(value) == currentValue ): return False
+        element.text = str(value)
+        return True
+
+    def updateNFO(self, filepath, playcount):
+        dirty = False
+        filepath = self.locateNfoFile(filepath)
+        notificationsWanted = addon.getSetting('notification') == 'true'
 
         if xbmcvfs.exists(filepath):
-            sFile = xbmcvfs.File(filepath)
-            currentBuffer = []
-            msg = ''
-            while True:
-                buf = sFile.read(1024)
-                currentBuffer.append(buf)
-                if not buf:
-                    msg = ''.join(currentBuffer)                    
-                    break
+            xml = self.readFile(filepath)
+            if not xml:
+                xbmc.log("{0} NFO is not readable  {1}".format(addon_name,filepath), xbmc.LOGINFO)
+                if notificationsWanted:  xbmc.executebuiltin('Notification(%s, NFO not readable, %s, %s)' %(addon_name, delay, logo) )
+                return
+             
+            tree=self.parseXml(xml)
+            if tree is None:
+                xbmc.log("{0} NFO is not XML  {1}".format(addon_name,filepath), xbmc.LOGINFO)
+                if notificationsWanted: xbmc.executebuiltin('Notification(%s, NFO is not XML, %s, %s)' %(addon_name, delay, logo) )
+                return
 
-            sFile.close()
-            
-            tree = ET.ElementTree(ET.fromstring(msg))
             root = tree.getroot()
-
-            p = root.find('playcount')
-            if p is None:
-                p = ET.SubElement(root, 'playcount')
-            p.text = str(playcount)
-
+            if root is None:
+                xbmc.log("{0} root element not found".format(addon_name), xbmc.LOGINFO)
+                if notificationsWanted: xbmc.executebuiltin('Notification(%s, NFO unexpected contents, %s, %s)' %(addon_name, delay, logo) )
+                return
+ 
+            p = self.findOrCreateElement(root,'playcount', True)
+            dirty = self.setElementText(p, playcount) or dirty
+ 
             if addon.getSetting('changewatchedtag') == 'true':
-                w = root.find('watched')
-                if (w is None) and (addon.getSetting('createwatchedtag') == 'true'):
-                    w = ET.SubElement(root, 'watched')
-                if playcount > 0:
-                    w.text = 'true'
+                w = self.findOrCreateElement(root,'watched', addon.getSetting('createwatchedtag') == 'true')
+                if (w is not None):
+                    dirty = self.setElementText(w,   playcount > 0 and 'True' or 'False' ) or dirty
+                
+
+            if ( dirty ):
+                self.prettyPrintXML(root)
+                xml = ET.tostring(root, encoding='UTF-8')
+                if not xml:
+                    xbmc.log("{0} NFO XML creation failed".format(addon_name), xbmc.LOGINFO)
+                    if notificationsWanted: xbmc.executebuiltin('Notification(%s, NFO XML creation failed, %s, %s)' %(addon_name, delay, logo) )
+                    return
+                xbmc.log("{0} xml is {1}".format(addon_name, str(xml)), xbmc.LOGDEBUG)
+ 
+                if self.writeFile(filepath, xml):
+                    xbmc.log("{0} succesfully updated {1}".format(addon_name, filepath), xbmc.LOGDEBUG)
+                    if notificationsWanted: xbmc.executebuiltin('Notification(%s, NFO updated, %s, %s)' %(addon_name, delay, logo) )
                 else:
-                    w.text = 'false'
-
-            self.prettyPrintXML(root)
-            
-            msg = ET.tostring(root, encoding='UTF-8')
-
-            if msg:
-                dFile = xbmcvfs.File(filepath, 'w')
-                dFile.write(msg) ##String msg or bytearray: bytearray(msg)
-                dFile.close()
-
-                #if addon.getSetting('notification') == 'true':
-                #    xbmc.executebuiltin('Notification(%s, NFO updated, %s, %s)' %(addon_name, noti_duration, logo) )
+                    if notificationsWanted: xbmc.executebuiltin('Notification(%s, NFO not updated; write issue, %s, %s)' %(addon_name, delay, logo) )
             else:
-                if addon.getSetting('notification') == 'true':
-                    xbmc.executebuiltin('Notification(%s, Error occured, %s, %s)' %(addon_name, delay, logo) )
+                xbmc.log("{0} no changes to the NFO file are needed".format(addon_name),xbmc.LOGDEBUG)
 
         else:
-            if addon.getSetting('notification') == 'true':
-                xbmc.executebuiltin('Notification(%s, File not found, %s, %s)' %(addon_name, delay, logo) )
+            xbmc.log("{0} NFO not found {1}".format(addon_name, filepath), xbmc.LOGINFO)
+            if notificationsWanted:
+                xbmc.executebuiltin('Notification(%s, NFO File not found, %s, %s)' %(addon_name, delay, logo) )
+
+    def findOrCreateElement( self,  parent, elementName, okToCreate):
+        xbmc.log("{0} findOrCreateElement  {1}, {2}, {3} ".format(addon_name,str(parent),str(elementName),str(okToCreate)), xbmc.LOGINFO)
+        result = parent.find(elementName)
+        if result == None and okToCreate:
+            result = ET.SubElement(parent,elementName)
+        return result
+
+    def writeFile(self, filepath, contents):
+        notificationsWanted = addon.getSetting('notification') == 'true'
+        try:
+            dFile = xbmcvfs.File(filepath, 'w')
+            dFile.write(contents) ##String msg or bytearray: bytearray(msg)
+            dFile.close()
+            return True
+        except Exception as e:
+            xbmc.log("{0} I/O Error writing {1}, {2}".format(addon_name, filepath, str(e)),xbmc.LOGINFO)
+            if notificationsWanted: xbmc.executebuiltin('Notification(%s, Write IO Error %s, %s)' %(addon_name, delay, logo) )
+        return False
+            
 
 
     def prettyPrintXML(self, elem, level=0):

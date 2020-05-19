@@ -1,3 +1,11 @@
+v1.1.5 (May 18, 2020)
+- Kodi 18 Compatible
+- added support for TV show nfo (season and episode done prior)
+- improved logging and notifications
+- refactored into smaller methods
+- will now use alternate nfos (e.g. movie.nfo) if primary nfo not found
+- hardened against expected message contents, filesystem, and I/O problems
+
 v1.1.1 (Mar 12, 2015):
 - Create/Add new watched-tag if desired
 
